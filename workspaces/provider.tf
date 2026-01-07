@@ -11,6 +11,7 @@ terraform {
 
 
   backend "s3" {
+    
     bucket       = "84s-remote-statee"
     key          = "workspaces demo"
     region       = "us-east-1"
