@@ -1,13 +1,13 @@
 # terraform-multi-env
 
-> Multi-environment Terraform — promote the same infrastructure across **dev**, **stage**, and **prod** with isolated state, per-env variables, and zero code duplication.
+Multi-environment Terraform. Promote the same infrastructure across dev, stage, and prod with isolated state, per-env variables, and zero code duplication.
 
 ![Terraform](https://img.shields.io/badge/Terraform-7B42BC?logo=terraform&logoColor=white)
 ![HCL](https://img.shields.io/badge/HCL-844FBA?logo=terraform&logoColor=white)
 ![AWS](https://img.shields.io/badge/AWS-232F3E?logo=amazonaws&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
 
-## What this is
+## Overview
 
 The infrastructure from [`terraform`](https://github.com/sashank1064/terraform), promoted into a proper multi-environment layout. One set of modules, three deployed environments, separate state for each, and a CI pipeline that runs `plan` on PR and `apply` on merge.
 
@@ -15,12 +15,12 @@ The goal: changing `dev` must not be able to accidentally touch `prod`.
 
 ## Environment strategy
 
-I use a **directory-per-environment** layout (not workspaces) because:
+Directory-per-environment layout (not workspaces):
 
-- Environments are visibly separate in the file tree — new engineers can see at a glance what exists
-- Each env has its own state file and backend config → blast radius is physical, not convention
-- Per-env policies and variables live next to the env, not in a tangle of `locals { workspace_dispatch = ... }`
-- Workspaces are still used internally for short-lived feature branches within `dev`
+- Environments are visibly separate in the file tree. New engineers can see at a glance what exists.
+- Each env has its own state file and backend config, so blast radius is physical, not convention.
+- Per-env policies and variables live next to the env, not in a tangle of `locals { workspace_dispatch = ... }`.
+- Workspaces are still used internally for short-lived feature branches within `dev`.
 
 ## Repo layout
 
@@ -60,11 +60,11 @@ I use a **directory-per-environment** layout (not workspaces) because:
 | Backups | 1 day | 7 days | 35 days |
 | Deletion protection | off | on | on |
 | CloudWatch detailed monitoring | off | on | on |
-| Tags.`Environment` | `dev` | `stage` | `prod` |
+| Tags.Environment | `dev` | `stage` | `prod` |
 
-All differences live in each env's `terraform.tfvars` — modules themselves never branch on environment.
+All differences live in each env's `terraform.tfvars`. Modules themselves never branch on environment.
 
-## Running it
+## Usage
 
 ```bash
 # Move into the environment you want to operate on
@@ -81,41 +81,39 @@ The `main` branch is protected. `apply` only runs after a human has approved the
 
 ## CI pipeline
 
-**`.github/workflows/plan.yml`** — on every PR touching `envs/*`:
+**`.github/workflows/plan.yml`** on every PR touching `envs/*`:
+
 1. `terraform fmt -check -recursive`
 2. `tflint`
 3. `terraform init` with the env's backend
-4. `terraform plan` — result posted as a collapsible PR comment
-5. `checkov` / OPA policy scan
+4. `terraform plan`, result posted as a collapsible PR comment
+5. `checkov` and OPA policy scan
 
-**`.github/workflows/apply.yml`** — on merge to `main`:
+**`.github/workflows/apply.yml`** on merge to `main`:
+
 1. Re-runs `plan` to guard against drift between PR and merge
 2. If identical, runs `apply` against the detected environment
 3. Posts apply output back to the original PR
 
 ## State management
 
-- **Backend:** S3 with server-side encryption + versioning
-- **Locking:** DynamoDB table (`terraform-state-lock`) — prevents concurrent apply
-- **Keys:** `envs/<env>/terraform.tfstate` — one file per env, never shared
-- **Access:** IAM role assumed by CI, with different roles per env so `dev` credentials cannot write to `prod` state
+- **Backend:** S3 with server-side encryption and versioning
+- **Locking:** DynamoDB table (`terraform-state-lock`), prevents concurrent apply
+- **Keys:** `envs/<env>/terraform.tfstate`, one file per env, never shared
+- **Access:** IAM role assumed by CI, different roles per env so `dev` credentials cannot write to `prod` state
 
 ## What this demonstrates
 
-- **Promotion discipline** — dev → stage → prod is code, not vibes
-- **Blast-radius isolation** — state, credentials, and config are all partitioned per env
-- **Repeatable review** — `plan` comments on PRs mean every change is visible before it ships
-- **Policy as code** — OPA rules enforce "no `0.0.0.0/0` SSH", "RDS must be encrypted", "S3 must have versioning", etc.
-- **No copy-paste** — shared modules, env-specific variables, end of story
+- **Promotion discipline.** dev to stage to prod is code, not vibes.
+- **Blast-radius isolation.** State, credentials, and config are all partitioned per env.
+- **Repeatable review.** `plan` comments on PRs mean every change is visible before it ships.
+- **Policy as code.** OPA rules enforce "no `0.0.0.0/0` SSH", "RDS must be encrypted", "S3 must have versioning", and similar.
+- **No copy-paste.** Shared modules, env-specific variables, end of story.
 
-## Progression
+## Related repos
 
 1. [`shell-roboshop`](https://github.com/sashank1064/shell-roboshop)
 2. [`ansible-roboshop`](https://github.com/sashank1064/ansible-roboshop)
 3. [`ansible-roboshop-roles`](https://github.com/sashank1064/ansible-roboshop-roles)
-4. [`terraform`](https://github.com/sashank1064/terraform) — single-env infra
-5. **`terraform-multi-env`** ← you are here
-
----
-
-Part of my DevOps portfolio.
+4. [`terraform`](https://github.com/sashank1064/terraform): single-env infra
+5. `terraform-multi-env` (this repo)
