@@ -1,119 +1,94 @@
 # terraform-multi-env
 
-Multi-environment Terraform. Promote the same infrastructure across dev, stage, and prod with isolated state, per-env variables, and zero code duplication.
+Two ways to run the same Terraform across dev and prod, side by side, so you can see the trade-offs: **per-environment tfvars files** vs **Terraform workspaces**.
 
 ![Terraform](https://img.shields.io/badge/Terraform-7B42BC?logo=terraform&logoColor=white)
 ![HCL](https://img.shields.io/badge/HCL-844FBA?logo=terraform&logoColor=white)
 ![AWS](https://img.shields.io/badge/AWS-232F3E?logo=amazonaws&logoColor=white)
-![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
 
 ## Overview
 
-The infrastructure from [`terraform`](https://github.com/sashank1064/terraform), promoted into a proper multi-environment layout. One set of modules, three deployed environments, separate state for each, and a CI pipeline that runs `plan` on PR and `apply` on merge.
+When you spin up the same infrastructure in more than one environment, you have a choice: feed environment-specific values through separate `*.tfvars` files, or use `terraform workspace` and branch on `terraform.workspace` inside your config. Both work. They fail differently under pressure.
 
-The goal: changing `dev` must not be able to accidentally touch `prod`.
-
-## Environment strategy
-
-Directory-per-environment layout (not workspaces):
-
-- Environments are visibly separate in the file tree. New engineers can see at a glance what exists.
-- Each env has its own state file and backend config, so blast radius is physical, not convention.
-- Per-env policies and variables live next to the env, not in a tangle of `locals { workspace_dispatch = ... }`.
-- Workspaces are still used internally for short-lived feature branches within `dev`.
+This repo runs the same EC2 + SG setup (Roboshop-style) under both patterns so the differences are visible in code, not in slide decks.
 
 ## Repo layout
 
 ```
 .
-├── modules/                  # shared, reusable modules (no env-specific logic)
-│   ├── vpc/
-│   ├── ec2/
-│   ├── alb/
-│   ├── route53/
-│   ├── sg/
-│   └── iam/
-├── envs/
+├── tf-vars/                 # approach 1: one tfvars file per environment
+│   ├── provider.tf
+│   ├── ec2.tf
+│   ├── varibles.tf
 │   ├── dev/
-│   │   ├── backend.tf        # S3 bucket + key per env
-│   │   ├── provider.tf
-│   │   ├── main.tf           # module calls with dev values
-│   │   └── terraform.tfvars
-│   ├── stage/
-│   │   └── ...
+│   │   ├── dev.tfvars       # dev-specific values
+│   │   └── backend.tfvars   # dev-specific backend config
 │   └── prod/
-│       └── ...
-├── policies/                 # OPA / Sentinel policies applied to every env
-├── .github/workflows/
-│   ├── plan.yml              # runs on PR, posts plan as comment
-│   └── apply.yml             # runs on merge to main, env-scoped via labels
-└── README.md
+│       ├── prod.tfvars
+│       └── backend.tfvars
+└── workspaces/              # approach 2: terraform workspaces + lookup()
+    ├── provider.tf
+    ├── ec2.tf               # uses terraform.workspace in names and tags
+    └── varibles.tf          # instance_type is a map keyed by workspace
 ```
 
-## Per-environment differences
-
-| Setting | dev | stage | prod |
-|---|---|---|---|
-| Instance type | `t3.small` | `t3.medium` | `m5.large` |
-| Multi-AZ DB | no | yes | yes |
-| NAT gateway | single | single | per-AZ |
-| Backups | 1 day | 7 days | 35 days |
-| Deletion protection | off | on | on |
-| CloudWatch detailed monitoring | off | on | on |
-| Tags.Environment | `dev` | `stage` | `prod` |
-
-All differences live in each env's `terraform.tfvars`. Modules themselves never branch on environment.
-
-## Usage
+## Approach 1: per-environment tfvars
 
 ```bash
-# Move into the environment you want to operate on
-cd envs/dev
+cd tf-vars
 
-terraform init
-terraform plan -out=tfplan
+# Init with the env-specific backend (separate state per env)
+terraform init -backend-config=dev/backend.tfvars
+
+# Plan and apply against that env's values
+terraform plan -var-file=dev/dev.tfvars -out=tfplan
 terraform apply tfplan
 
-# Promotion to stage is the same flow in envs/stage, via a reviewed PR
+# Prod is the same flow with prod/ files
 ```
 
-The `main` branch is protected. `apply` only runs after a human has approved the plan comment on the PR.
+**Good for:** teams that want the env differences to be visible in the file tree. New engineers can read `dev/dev.tfvars` and know exactly what's different about dev.
 
-## CI pipeline
+**Trade-off:** every `init`, `plan`, `apply` needs the right `-var-file` and `-backend-config`. Easy to forget, which is why the wrapper script or CI has to enforce it.
 
-**`.github/workflows/plan.yml`** on every PR touching `envs/*`:
+## Approach 2: Terraform workspaces
 
-1. `terraform fmt -check -recursive`
-2. `tflint`
-3. `terraform init` with the env's backend
-4. `terraform plan`, result posted as a collapsible PR comment
-5. `checkov` and OPA policy scan
+```bash
+cd workspaces
 
-**`.github/workflows/apply.yml`** on merge to `main`:
+terraform init
+terraform workspace new dev
+terraform workspace new prod
 
-1. Re-runs `plan` to guard against drift between PR and merge
-2. If identical, runs `apply` against the detected environment
-3. Posts apply output back to the original PR
+# Switch and apply
+terraform workspace select dev
+terraform plan -out=tfplan
+terraform apply tfplan
+```
 
-## State management
+The config branches on `terraform.workspace`:
 
-- **Backend:** S3 with server-side encryption and versioning
-- **Locking:** DynamoDB table (`terraform-state-lock`), prevents concurrent apply
-- **Keys:** `envs/<env>/terraform.tfstate`, one file per env, never shared
-- **Access:** IAM role assumed by CI, different roles per env so `dev` credentials cannot write to `prod` state
+```hcl
+resource "aws_instance" "roboshop" {
+  instance_type = lookup(var.instance_type, terraform.workspace)
+  tags = {
+    Name        = "${var.Project}-${var.instances[count.index]}-${terraform.workspace}"
+    Environment = terraform.workspace
+  }
+}
+```
 
-## What this demonstrates
+**Good for:** quick, low-ceremony separation when envs share one backend.
 
-- **Promotion discipline.** dev to stage to prod is code, not vibes.
-- **Blast-radius isolation.** State, credentials, and config are all partitioned per env.
-- **Repeatable review.** `plan` comments on PRs mean every change is visible before it ships.
-- **Policy as code.** OPA rules enforce "no `0.0.0.0/0` SSH", "RDS must be encrypted", "S3 must have versioning", and similar.
-- **No copy-paste.** Shared modules, env-specific variables, end of story.
+**Trade-off:** all workspaces live under one state bucket key prefix, so access control is coarser. Easier to accidentally run against the wrong workspace. I reach for this inside `dev` for short-lived feature stacks, not across dev/prod.
+
+## Why both in one repo
+
+To make the choice defensible. When a team asks "which pattern should we use?", the honest answer is usually "separate directories and state per env (tf-vars style) for dev/stage/prod; workspaces only for short-lived sandboxes inside an env." Having both side by side makes that easy to explain in a code review.
 
 ## Related repos
 
-1. [`shell-roboshop`](https://github.com/sashank1064/shell-roboshop)
-2. [`ansible-roboshop`](https://github.com/sashank1064/ansible-roboshop)
-3. [`ansible-roboshop-roles`](https://github.com/sashank1064/ansible-roboshop-roles)
-4. [`terraform`](https://github.com/sashank1064/terraform): single-env infra
-5. `terraform-multi-env` (this repo)
+1. [`terraform`](https://github.com/sashank1064/terraform): Terraform patterns reference
+2. [`terraform-aws-vpc`](https://github.com/sashank1064/terraform-aws-vpc), [`terraform-aws-securitygroup`](https://github.com/sashank1064/terraform-aws-securitygroup), [`terraform-aws-instance`](https://github.com/sashank1064/terraform-aws-instance): published reusable modules
+3. [`terraform-aws-roboshop`](https://github.com/sashank1064/terraform-aws-roboshop): component-level infra
+4. [`roboshop-infra-dev`](https://github.com/sashank1064/roboshop-infra-dev): layered RoboShop deployment
